@@ -64,374 +64,330 @@ interface TimelineStore extends TimelineState, TimelineActions, BackendState {
   endClipResize: () => Promise<void>;
 }
 
-// Debounce helper for auto-save
-const createDebouncedSave = (saveFn: () => Promise<void>, delay: number = 1000) => {
-  let timeoutId: NodeJS.Timeout;
-  return () => {
-    clearTimeout(timeoutId);
-    timeoutId = setTimeout(saveFn, delay);
-  };
-};
-
 // Create the store
 export const useTimelineStore = create<TimelineStore>()(
   devtools(
-    (set, get) => {
-      // Debounced save function
-      const debouncedSave = createDebouncedSave(async () => {
+    (set, get) => ({
+      ...initialState,
+      timelineId: null,
+      isLoading: false,
+      isSaving: false,
+      error: null,
+      lastSaved: null,
+
+      // Backend actions
+      loadTimeline: async (id: number) => {
+        set({ isLoading: true, error: null });
+        try {
+          const timeline = await api.getTimeline(id);
+          set({ 
+            timelineId: id,
+            isLoading: false,
+          });
+        } catch (error) {
+          const apiError = error as ApiError;
+          set({ 
+            error: apiError.message || 'Failed to load timeline',
+            isLoading: false 
+          });
+        }
+      },
+
+      createTimeline: async (title: string, description?: string) => {
+        set({ isLoading: true, error: null });
+        try {
+          const timeline = await api.createTimeline({ title, description });
+          set({ 
+            timelineId: timeline.id,
+            isLoading: false,
+            lastSaved: new Date(),
+          });
+        } catch (error) {
+          const apiError = error as ApiError;
+          set({ 
+            error: apiError.message || 'Failed to create timeline',
+            isLoading: false 
+          });
+        }
+      },
+
+      saveTimeline: async () => {
         const { timelineId } = get();
-        if (!timelineId) return;
+        if (!timelineId) {
+          set({ error: 'No timeline loaded' });
+          return;
+        }
         
-        set({ isSaving: true });
+        set({ isSaving: true, error: null });
         try {
           const { tracks } = get();
           await api.saveTimelineData(timelineId, {
             title: 'Timeline',
             tracks,
           });
-          set({ lastSaved: new Date(), error: null });
+          set({ lastSaved: new Date() });
         } catch (error) {
           const apiError = error as ApiError;
           set({ error: apiError.message || 'Failed to save timeline' });
         } finally {
           set({ isSaving: false });
         }
-      }, 1000);
+      },
 
-      return {
-        ...initialState,
-        timelineId: null,
-        isLoading: false,
-        isSaving: false,
-        error: null,
-        lastSaved: null,
+      clearError: () => set({ error: null }),
 
-        // Backend actions
-        loadTimeline: async (id: number) => {
-          set({ isLoading: true, error: null });
-          try {
-            const timeline = await api.getTimeline(id);
-            set({ 
-              timelineId: id,
-              isLoading: false,
-              // TODO: Parse tracks from backend response when available
-            });
-          } catch (error) {
-            const apiError = error as ApiError;
-            set({ 
-              error: apiError.message || 'Failed to load timeline',
-              isLoading: false 
-            });
-          }
-        },
+      // Track actions
+      addTrack: (type) => {
+        set((state) => {
+          const trackCount = state.tracks.filter((t) => t.type === type).length;
+          const newTrack: TimelineTrack = {
+            id: generateId(),
+            name: `${type === 'video' ? 'Video' : 'Audio'} ${trackCount + 1}`,
+            type,
+            clips: [],
+            isMuted: false,
+            isLocked: false,
+            isVisible: true,
+          };
+          return { tracks: [...state.tracks, newTrack] };
+        });
+      },
 
-        createTimeline: async (title: string, description?: string) => {
-          set({ isLoading: true, error: null });
-          try {
-            const timeline = await api.createTimeline({ title, description });
-            set({ 
-              timelineId: timeline.id,
-              isLoading: false,
-              lastSaved: new Date(),
-            });
-          } catch (error) {
-            const apiError = error as ApiError;
-            set({ 
-              error: apiError.message || 'Failed to create timeline',
-              isLoading: false 
-            });
-          }
-        },
+      removeTrack: (trackId) => {
+        set((state) => ({
+          tracks: state.tracks.filter((t) => t.id !== trackId),
+          selectedClipIds: state.selectedClipIds.filter(
+            (id) => !state.tracks.find((t) => t.id === trackId)?.clips.some((c) => c.id === id)
+          ),
+          selectedTrackId: state.selectedTrackId === trackId ? null : state.selectedTrackId,
+        }));
+      },
 
-        saveTimeline: async () => {
-          const { timelineId } = get();
-          if (!timelineId) {
-            set({ error: 'No timeline loaded' });
-            return;
-          }
+      moveTrack: (trackId, newIndex) => {
+        set((state) => {
+          const tracks = [...state.tracks];
+          const oldIndex = tracks.findIndex((t) => t.id === trackId);
+          if (oldIndex === -1) return state;
           
-          set({ isSaving: true, error: null });
-          try {
-            const { tracks } = get();
-            await api.saveTimelineData(timelineId, {
-              title: 'Timeline',
-              tracks,
-            });
-            set({ lastSaved: new Date() });
-          } catch (error) {
-            const apiError = error as ApiError;
-            set({ error: apiError.message || 'Failed to save timeline' });
-          } finally {
-            set({ isSaving: false });
-          }
-        },
+          const [movedTrack] = tracks.splice(oldIndex, 1);
+          tracks.splice(newIndex, 0, movedTrack);
+          return { tracks };
+        });
+      },
 
-        clearError: () => set({ error: null }),
+      updateTrack: (trackId, updates) => {
+        set((state) => ({
+          tracks: state.tracks.map((t) =>
+            t.id === trackId ? { ...t, ...updates } : t
+          ),
+        }));
+      },
 
-        // Track actions
-        addTrack: (type) => {
-          set((state) => {
-            const trackCount = state.tracks.filter((t) => t.type === type).length;
-            const newTrack: TimelineTrack = {
-              id: generateId(),
-              name: `${type === 'video' ? 'Video' : 'Audio'} ${trackCount + 1}`,
-              type,
-              clips: [],
-              isMuted: false,
-              isLocked: false,
-              isVisible: true,
-            };
-            const newState = { tracks: [...state.tracks, newTrack] };
-            return newState;
+      // Clip actions
+      addClip: (trackId, clip) => {
+        set((state) => ({
+          tracks: state.tracks.map((t) =>
+            t.id === trackId
+              ? { ...t, clips: [...t.clips, { ...clip, id: generateId() }] }
+              : t
+          ),
+        }));
+      },
+
+      removeClip: (clipId) => {
+        set((state) => ({
+          tracks: state.tracks.map((t) => ({
+            ...t,
+            clips: t.clips.filter((c) => c.id !== clipId),
+          })),
+          selectedClipIds: state.selectedClipIds.filter((id) => id !== clipId),
+        }));
+      },
+
+      moveClip: (clipId, newTrackId, newStartTime) => {
+        set((state) => {
+          let clipToMove: TimelineClip | undefined;
+          
+          const tracks = state.tracks.map((t) => {
+            const clip = t.clips.find((c) => c.id === clipId);
+            if (clip) {
+              clipToMove = clip;
+              return { ...t, clips: t.clips.filter((c) => c.id !== clipId) };
+            }
+            return t;
           });
-          debouncedSave();
-        },
-
-        removeTrack: (trackId) => {
-          set((state) => ({
-            tracks: state.tracks.filter((t) => t.id !== trackId),
-            selectedClipIds: state.selectedClipIds.filter(
-              (id) => !state.tracks.find((t) => t.id === trackId)?.clips.some((c) => c.id === id)
-            ),
-            selectedTrackId: state.selectedTrackId === trackId ? null : state.selectedTrackId,
-          }));
-          debouncedSave();
-        },
-
-        moveTrack: (trackId, newIndex) => {
-          set((state) => {
-            const tracks = [...state.tracks];
-            const oldIndex = tracks.findIndex((t) => t.id === trackId);
-            if (oldIndex === -1) return state;
-            
-            const [movedTrack] = tracks.splice(oldIndex, 1);
-            tracks.splice(newIndex, 0, movedTrack);
-            return { tracks };
-          });
-          debouncedSave();
-        },
-
-        updateTrack: (trackId, updates) => {
-          set((state) => ({
-            tracks: state.tracks.map((t) =>
-              t.id === trackId ? { ...t, ...updates } : t
-            ),
-          }));
-          debouncedSave();
-        },
-
-        // Clip actions
-        addClip: (trackId, clip) => {
-          set((state) => ({
-            tracks: state.tracks.map((t) =>
-              t.id === trackId
-                ? { ...t, clips: [...t.clips, { ...clip, id: generateId() }] }
+          
+          if (!clipToMove) return state;
+          
+          return {
+            tracks: tracks.map((t) =>
+              t.id === newTrackId
+                ? {
+                    ...t,
+                    clips: [
+                      ...t.clips,
+                      { ...clipToMove!, trackId: newTrackId, startTime: newStartTime },
+                    ],
+                  }
                 : t
             ),
-          }));
-          debouncedSave();
-        },
+          };
+        });
+      },
 
-        removeClip: (clipId) => {
-          set((state) => ({
-            tracks: state.tracks.map((t) => ({
-              ...t,
-              clips: t.clips.filter((c) => c.id !== clipId),
-            })),
-            selectedClipIds: state.selectedClipIds.filter((id) => id !== clipId),
-          }));
-          debouncedSave();
-        },
+      updateClip: (clipId, updates) => {
+        set((state) => ({
+          tracks: state.tracks.map((t) => ({
+            ...t,
+            clips: t.clips.map((c) =>
+              c.id === clipId ? { ...c, ...updates } : c
+            ),
+          })),
+        }));
+      },
 
-        moveClip: (clipId, newTrackId, newStartTime) => {
-          set((state) => {
-            let clipToMove: TimelineClip | undefined;
-            
-            // Find and remove clip from current track
-            const tracks = state.tracks.map((t) => {
-              const clip = t.clips.find((c) => c.id === clipId);
-              if (clip) {
-                clipToMove = clip;
-                return { ...t, clips: t.clips.filter((c) => c.id !== clipId) };
-              }
-              return t;
-            });
-            
-            if (!clipToMove) return state;
-            
-            // Add clip to new track with updated start time
-            return {
-              tracks: tracks.map((t) =>
-                t.id === newTrackId
-                  ? {
-                      ...t,
-                      clips: [
-                        ...t.clips,
-                        { ...clipToMove!, trackId: newTrackId, startTime: newStartTime },
-                      ],
-                    }
-                  : t
-              ),
-            };
+      // Drag and drop with immediate save
+      dragClip: (clipId, newTrackId, newStartTime) => {
+        set((state) => {
+          let clipToMove: TimelineClip | undefined;
+          
+          const tracks = state.tracks.map((t) => {
+            const clip = t.clips.find((c) => c.id === clipId);
+            if (clip) {
+              clipToMove = clip;
+              return { ...t, clips: t.clips.filter((c) => c.id !== clipId) };
+            }
+            return t;
           });
-          debouncedSave();
-        },
+          
+          if (!clipToMove) return state;
+          
+          return {
+            tracks: tracks.map((t) =>
+              t.id === newTrackId
+                ? {
+                    ...t,
+                    clips: [
+                      ...t.clips,
+                      { ...clipToMove!, trackId: newTrackId, startTime: newStartTime },
+                    ].sort((a, b) => a.startTime - b.startTime),
+                  }
+                : t
+            ),
+          };
+        });
+      },
 
-        updateClip: (clipId, updates) => {
-          set((state) => ({
-            tracks: state.tracks.map((t) => ({
-              ...t,
-              clips: t.clips.map((c) =>
-                c.id === clipId ? { ...c, ...updates } : c
-              ),
-            })),
-          }));
-          debouncedSave();
-        },
+      endClipDrag: async () => {
+        await get().saveTimeline();
+      },
 
-        // Drag and drop with immediate save
-        dragClip: (clipId, newTrackId, newStartTime) => {
-          set((state) => {
-            let clipToMove: TimelineClip | undefined;
-            
-            const tracks = state.tracks.map((t) => {
-              const clip = t.clips.find((c) => c.id === clipId);
-              if (clip) {
-                clipToMove = clip;
-                return { ...t, clips: t.clips.filter((c) => c.id !== clipId) };
-              }
-              return t;
-            });
-            
-            if (!clipToMove) return state;
-            
-            return {
-              tracks: tracks.map((t) =>
-                t.id === newTrackId
-                  ? {
-                      ...t,
-                      clips: [
-                        ...t.clips,
-                        { ...clipToMove!, trackId: newTrackId, startTime: newStartTime },
-                      ].sort((a, b) => a.startTime - b.startTime),
-                    }
-                  : t
-              ),
-            };
-          });
-        },
-
-        endClipDrag: async () => {
-          await get().saveTimeline();
-        },
-
-        // Resize with immediate save
-        resizeClip: (clipId, newDuration, startTime) => {
-          set((state) => ({
-            tracks: state.tracks.map((t) => ({
-              ...t,
-              clips: t.clips.map((c) =>
-                c.id === clipId 
-                  ? { 
-                      ...c, 
-                      duration: newDuration,
-                      ...(startTime !== undefined && { startTime })
-                    } 
-                  : c
-              ),
-            })),
-          }));
-        },
-
-        endClipResize: async () => {
-          await get().saveTimeline();
-        },
-
-        // Selection actions
-        selectClip: (clipId, multi = false) =>
-          set((state) => ({
-            selectedClipIds: multi
-              ? [...state.selectedClipIds, clipId]
-              : [clipId],
+      // Resize with immediate save
+      resizeClip: (clipId, newDuration, startTime) => {
+        set((state) => ({
+          tracks: state.tracks.map((t) => ({
+            ...t,
+            clips: t.clips.map((c) =>
+              c.id === clipId 
+                ? { 
+                    ...c, 
+                    duration: newDuration,
+                    ...(startTime !== undefined && { startTime })
+                  } 
+                : c
+            ),
           })),
+        }));
+      },
 
-        deselectClip: (clipId) =>
-          set((state) => ({
-            selectedClipIds: state.selectedClipIds.filter((id) => id !== clipId),
+      endClipResize: async () => {
+        await get().saveTimeline();
+      },
+
+      // Selection actions
+      selectClip: (clipId, multi = false) =>
+        set((state) => ({
+          selectedClipIds: multi
+            ? [...state.selectedClipIds, clipId]
+            : [clipId],
+        })),
+
+      deselectClip: (clipId) =>
+        set((state) => ({
+          selectedClipIds: state.selectedClipIds.filter((id) => id !== clipId),
+        })),
+
+      clearSelection: () =>
+        set(() => ({
+          selectedClipIds: [],
+          selectedTrackId: null,
+        })),
+
+      selectTrack: (trackId) =>
+        set(() => ({
+          selectedTrackId: trackId,
+          selectedClipIds: [],
+        })),
+
+      // Playback actions
+      setCurrentTime: (time) =>
+        set(() => ({
+          currentTime: Math.max(0, time),
+        })),
+
+      setPlaying: (playing) =>
+        set(() => ({
+          isPlaying: playing,
+        })),
+
+      setZoom: (zoom) =>
+        set(() => ({
+          zoom: Math.max(10, Math.min(200, zoom)),
+        })),
+
+      // Timeline actions
+      splitClip: (clipId, splitTime) =>
+        set((state) => ({
+          tracks: state.tracks.map((t) => ({
+            ...t,
+            clips: t.clips.flatMap((c) => {
+              if (c.id !== clipId) return [c];
+              
+              const splitPoint = splitTime - c.startTime;
+              if (splitPoint <= 0 || splitPoint >= c.duration) return [c];
+              
+              const firstPart: TimelineClip = {
+                ...c,
+                duration: splitPoint,
+              };
+              
+              const secondPart: TimelineClip = {
+                ...c,
+                id: generateId(),
+                startTime: c.startTime + splitPoint,
+                duration: c.duration - splitPoint,
+              };
+              
+              return [firstPart, secondPart];
+            }),
           })),
+        })),
 
-        clearSelection: () =>
-          set(() => ({
-            selectedClipIds: [],
-            selectedTrackId: null,
+      trimClip: (clipId, startOffset, endOffset) =>
+        set((state) => ({
+          tracks: state.tracks.map((t) => ({
+            ...t,
+            clips: t.clips.map((c) => {
+              if (c.id !== clipId) return c;
+              return {
+                ...c,
+                startTime: c.startTime + startOffset,
+                duration: c.duration - startOffset - endOffset,
+              };
+            }),
           })),
-
-        selectTrack: (trackId) =>
-          set(() => ({
-            selectedTrackId: trackId,
-            selectedClipIds: [],
-          })),
-
-        // Playback actions
-        setCurrentTime: (time) =>
-          set(() => ({
-            currentTime: Math.max(0, time),
-          })),
-
-        setPlaying: (playing) =>
-          set(() => ({
-            isPlaying: playing,
-          })),
-
-        setZoom: (zoom) =>
-          set(() => ({
-            zoom: Math.max(10, Math.min(200, zoom)), // Clamp between 10 and 200
-          })),
-
-        // Timeline actions
-        splitClip: (clipId, splitTime) =>
-          set((state) => ({
-            tracks: state.tracks.map((t) => ({
-              ...t,
-              clips: t.clips.flatMap((c) => {
-                if (c.id !== clipId) return [c];
-                
-                const splitPoint = splitTime - c.startTime;
-                if (splitPoint <= 0 || splitPoint >= c.duration) return [c];
-                
-                const firstPart: TimelineClip = {
-                  ...c,
-                  duration: splitPoint,
-                };
-                
-                const secondPart: TimelineClip = {
-                  ...c,
-                  id: generateId(),
-                  startTime: c.startTime + splitPoint,
-                  duration: c.duration - splitPoint,
-                };
-                
-                return [firstPart, secondPart];
-              }),
-            })),
-          }),
-
-        trimClip: (clipId, startOffset, endOffset) =>
-          set((state) => ({
-            tracks: state.tracks.map((t) => ({
-              ...t,
-              clips: t.clips.map((c) => {
-                if (c.id !== clipId) return c;
-                return {
-                  ...c,
-                  startTime: c.startTime + startOffset,
-                  duration: c.duration - startOffset - endOffset,
-                };
-              }),
-            })),
-          }),
-      };
-    },
+        })),
+    }),
     { name: 'TimelineStore' }
   )
 );
