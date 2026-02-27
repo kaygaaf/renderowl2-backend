@@ -114,10 +114,10 @@ class ApiClient {
   }
 
   // Full timeline data sync (custom endpoint for frontend state)
-  async saveTimelineData(id: number, data: TimelineData): Promise<TimelineData> {
+  async saveTimelineData(id: number, data: TimelineData): Promise<TimelineData | TimelineResponse> {
     // For now, we'll use the update endpoint
     // In a full implementation, this would save tracks and clips too
-    return this.request(`/timeline/${id}/data`, {
+    return this.request<TimelineData>(`/timeline/${id}/data`, {
       method: 'PUT',
       body: JSON.stringify(data),
     }).catch(() => {
@@ -125,7 +125,7 @@ class ApiClient {
       return this.updateTimeline(id, {
         title: data.title,
         description: data.description,
-      }) as unknown as TimelineData;
+      });
     });
   }
 }
