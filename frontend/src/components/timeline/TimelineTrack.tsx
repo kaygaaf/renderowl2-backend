@@ -3,8 +3,10 @@
 import React from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { useDroppable } from '@dnd-kit/core';
 import { TimelineTrack as TimelineTrackType } from '@/types/timeline';
-import { useTimelineStore } from '@/store/timelineStore';
+import { useTimelineStore, useZoom } from '@/store/timelineStore';
+import { TimelineClip } from './TimelineClip';
 import { GripVertical, Eye, EyeOff, Lock, Unlock, Volume2, VolumeX, Trash2 } from 'lucide-react';
 
 interface TimelineTrackProps {
@@ -12,39 +14,56 @@ interface TimelineTrackProps {
 }
 
 export const TimelineTrack: React.FC<TimelineTrackProps> = ({ track }) => {
+  const zoom = useZoom();
   const {
     attributes,
     listeners,
-    setNodeRef,
+    setNodeRef: setSortableRef,
     transform,
     transition,
-    isDragging,
+    isDragging: isTrackDragging,
   } = useSortable({ id: track.id });
 
-  const { updateTrack, removeTrack, selectTrack, selectedTrackId, zoom } = useTimelineStore();
+  // Droppable for clips
+  const { setNodeRef: setDroppableRef, isOver } = useDroppable({
+    id: `track-${track.id}`,
+    data: { trackId: track.id },
+  });
+
+  const { updateTrack, removeTrack, selectTrack, selectedTrackId } = useTimelineStore();
   const isSelected = selectedTrackId === track.id;
 
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
-    opacity: isDragging ? 0.5 : 1,
+    opacity: isTrackDragging ? 0.5 : 1,
   };
 
   const trackHeight = track.type === 'video' ? 80 : 60;
 
+  // Combine refs for sortable and droppable
+  const setRefs = (el: HTMLElement | null) => {
+    setSortableRef(el);
+    setDroppableRef(el);
+  };
+
   return (
     <div
-      ref={setNodeRef}
+      ref={setRefs}
       style={style}
-      className={`flex border-b last:border-b-0 ${
-        isSelected ? 'bg-primary/5' : 'bg-background'
-      } ${isDragging ? 'z-50' : ''}`}
+      className={`
+        flex border-b last:border-b-0 transition-colors
+        ${isSelected ? 'bg-primary/5' : 'bg-background'}
+        ${isTrackDragging ? 'z-50' : ''}
+        ${isOver ? 'bg-primary/10' : ''}
+      `}
     >
       {/* Track header */}
       <div
-        className={`w-48 flex-shrink-0 border-r p-2 flex flex-col gap-1 ${
-          isSelected ? 'bg-primary/10' : 'bg-muted/30'
-        }`}
+        className={`
+          w-48 flex-shrink-0 border-r p-2 flex flex-col gap-1
+          ${isSelected ? 'bg-primary/10' : 'bg-muted/30'}
+        `}
         onClick={() => selectTrack(track.id)}
       >
         <div className="flex items-center gap-1">
@@ -65,7 +84,7 @@ export const TimelineTrack: React.FC<TimelineTrackProps> = ({ track }) => {
               e.stopPropagation();
               removeTrack(track.id);
             }}
-            className="p-1 hover:bg-destructive/10 hover:text-destructive rounded opacity-0 group-hover:opacity-100"
+            className="p-1 hover:bg-destructive/10 hover:text-destructive rounded opacity-0 group-hover:opacity-100 transition-opacity"
           >
             <Trash2 className="w-3 h-3" />
           </button>
@@ -122,7 +141,7 @@ export const TimelineTrack: React.FC<TimelineTrackProps> = ({ track }) => {
       >
         {/* Grid lines */}
         <div className="absolute inset-0 pointer-events-none">
-          {Array.from({ length: 20 }).map((_, i) => (
+          {Array.from({ length: 100 }).map((_, i) => (
             <div
               key={i}
               className="absolute top-0 bottom-0 border-l border-border/30"
@@ -133,32 +152,23 @@ export const TimelineTrack: React.FC<TimelineTrackProps> = ({ track }) => {
 
         {/* Clips */}
         {track.clips.map((clip) => (
-          <div
+          <TimelineClip
             key={clip.id}
-            className={`absolute top-1 bottom-1 rounded border-2 ${
-              track.type === 'video'
-                ? 'bg-blue-500/20 border-blue-500 hover:bg-blue-500/30'
-                : 'bg-green-500/20 border-green-500 hover:bg-green-500/30'
-            } cursor-pointer transition-colors`}
-            style={{
-              left: `${clip.startTime * zoom}px`,
-              width: `${clip.duration * zoom}px`,
-            }}
-            onClick={(e) => {
-              e.stopPropagation();
-              useTimelineStore.getState().selectClip(clip.id);
-            }}
-          >
-            <div className="px-2 py-1 text-xs truncate">
-              {clip.name}
-            </div>
-          </div>
+            clip={clip}
+            trackId={track.id}
+            trackType={track.type}
+          />
         ))}
 
         {track.clips.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center text-muted-foreground text-xs">
             Drop clips here
           </div>
+        )}
+
+        {/* Drop indicator */}
+        {isOver && (
+          <div className="absolute inset-0 border-2 border-dashed border-primary/50 bg-primary/5 rounded pointer-events-none" />
         )}
       </div>
     </div>

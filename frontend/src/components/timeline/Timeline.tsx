@@ -6,16 +6,23 @@ import {
   DragEndEvent,
   DragOverlay,
   DragStartEvent,
+  MouseSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
   closestCenter,
+  pointerWithin,
 } from '@dnd-kit/core';
 import {
   SortableContext,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { useTimelineStore, useTracks } from '@/store/timelineStore';
+import { useTimelineStore, useTracks, useZoom } from '@/store/timelineStore';
 import { TimelineTrack } from './TimelineTrack';
 import { TimelineRuler } from './TimelineRuler';
 import { TimelinePlayhead } from './TimelinePlayhead';
+import { TimelineClip as TimelineClipComponent } from './TimelineClip';
+import { TimelineClip } from '@/types/timeline';
 
 export interface TimelineProps {
   className?: string;
@@ -23,37 +30,131 @@ export interface TimelineProps {
 
 export const Timeline: React.FC<TimelineProps> = ({ className = '' }) => {
   const tracks = useTracks();
-  const moveTrack = useTimelineStore((state) => state.moveTrack);
-  const moveClip = useTimelineStore((state) => state.moveClip);
-  const setCurrentTime = useTimelineStore((state) => state.setCurrentTime);
+  const zoom = useZoom();
+  const { 
+    moveTrack, 
+    dragClip, 
+    endClipDrag,
+    addTrack,
+    isLoading,
+    isSaving,
+    error,
+    clearError,
+    timelineId,
+  } = useTimelineStore();
+  
   const [activeId, setActiveId] = React.useState<string | null>(null);
+  const [activeClip, setActiveClip] = React.useState<TimelineClip | null>(null);
+  const [dragOverlayPos, setDragOverlayPos] = React.useState<{ x: number; y: number } | null>(null);
+
+  // Configure sensors for drag detection
+  const sensors = useSensors(
+    useSensor(MouseSensor, {
+      activationConstraint: {
+        distance: 8,
+      },
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: {
+        delay: 250,
+        tolerance: 5,
+      },
+    })
+  );
 
   const handleDragStart = (event: DragStartEvent) => {
-    setActiveId(event.active.id as string);
+    const { active } = event;
+    setActiveId(active.id as string);
+    
+    // Check if dragging a clip
+    if (active.data.current?.clip) {
+      setActiveClip(active.data.current.clip);
+    }
   };
 
-  const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event;
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over, delta } = event;
     setActiveId(null);
+    setActiveClip(null);
 
     if (!over) return;
 
     // Handle track reordering
-    if (active.id !== over.id) {
-      const oldIndex = tracks.findIndex((t) => t.id === active.id);
-      const newIndex = tracks.findIndex((t) => t.id === over.id);
+    const oldTrackIndex = tracks.findIndex((t) => t.id === active.id);
+    const newTrackIndex = tracks.findIndex((t) => t.id === over.id);
+    
+    if (oldTrackIndex !== -1 && newTrackIndex !== -1 && active.id !== over.id) {
+      moveTrack(active.id as string, newTrackIndex);
+      return;
+    }
+
+    // Handle clip drag between tracks
+    if (active.data.current?.clip && over.id) {
+      const clip = active.data.current.clip as TimelineClip;
+      const sourceTrackId = active.data.current.trackId as string;
       
-      if (oldIndex !== -1 && newIndex !== -1) {
-        moveTrack(active.id as string, newIndex);
+      // Determine target track
+      let targetTrackId: string;
+      
+      if (over.id.toString().startsWith('track-')) {
+        targetTrackId = over.id.toString().replace('track-', '');
+      } else {
+        // Find track by clip ID
+        const track = tracks.find(t => t.clips.some(c => c.id === over.id));
+        if (track) {
+          targetTrackId = track.id;
+        } else {
+          return;
+        }
       }
+
+      // Calculate new start time based on drag delta
+      const deltaTime = delta.x / zoom;
+      const newStartTime = Math.max(0, clip.startTime + deltaTime);
+      
+      // Move clip
+      dragClip(clip.id, targetTrackId, newStartTime);
+      
+      // Save to backend
+      await endClipDrag();
     }
   };
 
-  const handleTimelineClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    // TODO: Convert pixels to time based on zoom
-    // setCurrentTime(x / zoom);
+  // Calculate grid position for drag overlay
+  const handleDragMove = (event: DragEndEvent) => {
+    if (activeClip) {
+      // Snap to grid (0.5 second increments)
+      // This is just visual feedback
+    }
+  };
+
+  // Status indicator component
+  const StatusIndicator = () => {
+    if (isLoading) {
+      return (
+        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+          <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+          </svg>
+          Loading...
+        </span>
+      );
+    }
+    
+    if (isSaving) {
+      return (
+        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+          <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+          </svg>
+          Saving...
+        </span>
+      );
+    }
+    
+    return null;
   };
 
   return (
@@ -65,17 +166,18 @@ export const Timeline: React.FC<TimelineProps> = ({ className = '' }) => {
           <span className="text-xs text-muted-foreground">
             {tracks.length} tracks
           </span>
+          <StatusIndicator />
         </div>
         
         <div className="flex items-center gap-2">
           <button
-            onClick={() => useTimelineStore.getState().addTrack('video')}
+            onClick={() => addTrack('video')}
             className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90"
           >
             + Video Track
           </button>
           <button
-            onClick={() => useTimelineStore.getState().addTrack('audio')}
+            onClick={() => addTrack('audio')}
             className="px-2 py-1 text-xs bg-secondary text-secondary-foreground rounded hover:bg-secondary/90"
           >
             + Audio Track
@@ -83,21 +185,36 @@ export const Timeline: React.FC<TimelineProps> = ({ className = '' }) => {
         </div>
       </div>
 
+      {/* Error banner */}
+      {error && (
+        <div className="px-4 py-2 bg-destructive/10 border-b border-destructive/20 flex items-center justify-between">
+          <span className="text-xs text-destructive">{error}</span>
+          <button
+            onClick={clearError}
+            className="text-xs text-destructive hover:underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Timeline ruler */}
       <TimelineRuler />
 
       {/* Tracks area */}
       <DndContext
+        sensors={sensors}
         collisionDetection={closestCenter}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
+        onDragMove={handleDragMove}
       >
         <div className="relative flex-1 overflow-auto">
           <SortableContext
             items={tracks.map((t) => t.id)}
             strategy={verticalListSortingStrategy}
           >
-            <div className="relative min-h-[200px]" onClick={handleTimelineClick}>
+            <div className="relative min-h-[200px]">
               {/* Playhead */}
               <TimelinePlayhead />
 
@@ -114,11 +231,26 @@ export const Timeline: React.FC<TimelineProps> = ({ className = '' }) => {
             </div>
           </SortableContext>
 
-          <DragOverlay>
+          <DragOverlay dropAnimation={null}>
             {activeId ? (
-              <div className="bg-primary/20 border-2 border-primary rounded p-2">
-                Moving...
-              </div>
+              activeClip ? (
+                <div
+                  className={`
+                    rounded border-2 border-dashed border-primary/50 bg-primary/20
+                    flex items-center justify-center
+                  `}
+                  style={{
+                    width: `${activeClip.duration * zoom}px`,
+                    height: '40px',
+                  }}
+                >
+                  <span className="text-xs text-primary">{activeClip.name}</span>
+                </div>
+              ) : (
+                <div className="bg-primary/20 border-2 border-primary rounded p-2">
+                  Moving Track...
+                </div>
+              )
             ) : null}
           </DragOverlay>
         </div>
@@ -139,7 +271,7 @@ export const Timeline: React.FC<TimelineProps> = ({ className = '' }) => {
         </div>
         
         <div className="text-xs text-muted-foreground">
-          Use drag & drop to reorder tracks
+          Drag clips to move • Drag edges to resize
         </div>
       </div>
     </div>
