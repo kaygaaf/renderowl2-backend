@@ -1,0 +1,491 @@
+name: 🔒 Security Scan
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  GO_VERSION: '1.21'
+  NODE_VERSION: '20'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+  packages: read
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SAST Scanning with Semgrep (Go + TypeScript)
+  # ─────────────────────────────────────────────────────────────────────────────
+  semgrep-sast:
+    name: 🔍 SAST - Semgrep
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep:latest
+    if: (github.actor != 'dependabot[bot]')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Semgrep SAST Scan
+        run: |
+          semgrep ci \
+            --config=.github/security/semgrep-rules.yml \
+            --json-output=semgrep-results.json \
+            --sarif-output=semgrep-results.sarif \
+            --error-on-findings \
+            || true
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+      - name: Upload SARIF to GitHub Security Tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep-sast
+
+      - name: Upload Semgrep results artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: semgrep-results
+          path: |
+            semgrep-results.sarif
+            semgrep-results.json
+          retention-days: 30
+
+      - name: Check for Critical/High findings
+        run: |
+          if [ -f semgrep-results.json ]; then
+            CRITICAL=$(cat semgrep-results.json | jq -r '.results[] | select(.extra.severity == "CRITICAL") | .check_id' | wc -l)
+            HIGH=$(cat semgrep-results.json | jq -r '.results[] | select(.extra.severity == "HIGH") | .check_id' | wc -l)
+            echo "Critical findings: $CRITICAL"
+            echo "High findings: $HIGH"
+            if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+              echo "❌ Critical or High severity findings detected!"
+              exit 1
+            fi
+          fi
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CodeQL Analysis (Backup/Complementary SAST)
+  # ─────────────────────────────────────────────────────────────────────────────
+  codeql-sast:
+    name: 🔍 SAST - CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'go', 'javascript-typescript' ]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended,security-and-quality
+          config-file: ./.github/security/codeql-config.yml
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+        if: matrix.language == 'go' || matrix.language == 'javascript-typescript'
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{matrix.language}}"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Dependency Scanning
+  # ─────────────────────────────────────────────────────────────────────────────
+  dependency-scan-go:
+    name: 📦 Dependency Scan - Go
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck -format sarif ./... > govulncheck-results.sarif || true
+
+      - name: Run Nancy (dependency scanner)
+        run: |
+          go list -json -deps ./... | nancy sleuth --output=json > nancy-results.json || true
+        continue-on-error: true
+
+      - name: Upload SARIF to GitHub Security Tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && hashFiles('govulncheck-results.sarif') != ''
+        with:
+          sarif_file: govulncheck-results.sarif
+          category: govulncheck
+
+      - name: Upload results artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: go-dependency-scan-results
+          path: |
+            govulncheck-results.sarif
+            nancy-results.json
+          retention-days: 30
+
+      - name: Check for vulnerabilities
+        run: |
+          if [ -f govulncheck-results.sarif ]; then
+            COUNT=$(cat govulncheck-results.sarif | jq '.runs[0].results | length')
+            echo "Vulnerabilities found: $COUNT"
+            if [ "$COUNT" -gt 0 ]; then
+              echo "⚠️ Go vulnerabilities detected. Review required."
+              # Don't fail the build for medium/low, just warn
+            fi
+          fi
+
+  dependency-scan-node:
+    name: 📦 Dependency Scan - Node.js
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          if [ -f frontend/package.json ]; then
+            cd frontend && npm ci
+          elif [ -f package.json ]; then
+            npm ci
+          fi
+
+      - name: Run npm audit
+        run: |
+          if [ -f frontend/package.json ]; then
+            cd frontend && npm audit --audit-level=high --json > ../npm-audit-results.json || true
+          elif [ -f package.json ]; then
+            npm audit --audit-level=high --json > npm-audit-results.json || true
+          fi
+
+      - name: Run Snyk for Node.js
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --sarif-file-output=snyk-node-results.sarif --severity-threshold=high
+          command: test
+
+      - name: Upload SARIF to GitHub Security Tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && hashFiles('snyk-node-results.sarif') != ''
+        with:
+          sarif_file: snyk-node-results.sarif
+          category: snyk-node
+
+      - name: Upload results artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: node-dependency-scan-results
+          path: |
+            snyk-node-results.sarif
+            npm-audit-results.json
+          retention-days: 30
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Secrets Detection
+  # ─────────────────────────────────────────────────────────────────────────────
+  secrets-scan:
+    name: 🔐 Secrets Detection
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run GitLeaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .github/security/gitleaks.toml
+          GITLEAKS_ENABLE_COMMENTS: true
+          GITLEAKS_ENABLE_SUMMARY: true
+        with:
+          config-path: .github/security/gitleaks.toml
+
+      - name: Run TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+          extra_args: --debug --only-verified
+        continue-on-error: true
+
+      - name: Generate TruffleHog SARIF
+        run: |
+          trufflehog filesystem ./ --json --only-verified > trufflehog-results.json || true
+          # Convert TruffleHog JSON to SARIF format
+          cat > convert-trufflehog.js << 'EOF'
+          const fs = require('fs');
+          const results = fs.readFileSync('trufflehog-results.json', 'utf8')
+            .split('\n')
+            .filter(line => line.trim())
+            .map(line => {
+              try { return JSON.parse(line); } catch { return null; }
+            })
+            .filter(Boolean);
+          
+          const sarif = {
+            "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+            "version": "2.1.0",
+            "runs": [{
+              "tool": {
+                "driver": {
+                  "name": "TruffleHog",
+                  "informationUri": "https://trufflesecurity.com/",
+                  "rules": []
+                }
+              },
+              "results": results.map((r, i) => ({
+                "ruleId": r.DetectorName || `secret-${i}`,
+                "level": "error",
+                "message": { "text": `Potential secret found: ${r.DetectorName}` },
+                "locations": [{
+                  "physicalLocation": {
+                    "artifactLocation": { "uri": r.SourceMetadata?.Data?.Filesystem?.file || "unknown" },
+                    "region": {
+                      "startLine": r.SourceMetadata?.Data?.Filesystem?.line || 1
+                    }
+                  }
+                }]
+              }))
+            }]
+          };
+          fs.writeFileSync('trufflehog-results.sarif', JSON.stringify(sarif, null, 2));
+          EOF
+          node convert-trufflehog.js || true
+        continue-on-error: true
+
+      - name: Upload TruffleHog SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && hashFiles('trufflehog-results.sarif') != ''
+        with:
+          sarif_file: trufflehog-results.sarif
+          category: trufflehog
+
+      - name: Upload secrets scan results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: secrets-scan-results
+          path: |
+            trufflehog-results.json
+            trufflehog-results.sarif
+          retention-days: 30
+
+      - name: Fail on secrets detection
+        run: |
+          if [ -f trufflehog-results.json ] && [ -s trufflehog-results.json ]; then
+            echo "❌ Secrets detected by TruffleHog!"
+            exit 1
+          fi
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Container Scanning with Trivy
+  # ─────────────────────────────────────────────────────────────────────────────
+  container-scan:
+    name: 🐳 Container Scan - Trivy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      matrix:
+        dockerfile: 
+          - ./Dockerfile
+          - ./frontend/Dockerfile
+          - ./backend/Dockerfile
+        include:
+          - dockerfile: ./Dockerfile
+            image_name: renderowl-main
+          - dockerfile: ./frontend/Dockerfile
+            image_name: renderowl-frontend
+          - dockerfile: ./backend/Dockerfile
+            image_name: renderowl-backend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: |
+          if [ -f "${{ matrix.dockerfile }}" ]; then
+            docker build -f ${{ matrix.dockerfile }} -t ${{ matrix.image_name }}:scan .
+          else
+            echo "Dockerfile ${{ matrix.dockerfile }} not found, skipping..."
+            touch skip-scan
+          fi
+
+      - name: Run Trivy vulnerability scanner (image)
+        if: hashFiles('skip-scan') == ''
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ matrix.image_name }}:scan'
+          format: 'sarif'
+          output: 'trivy-image-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+        continue-on-error: true
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-fs-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+        continue-on-error: true
+
+      - name: Run Trivy config scan (IaC)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-config-results.sarif'
+          severity: 'CRITICAL,HIGH'
+        continue-on-error: true
+
+      - name: Upload SARIF to GitHub Security Tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-image-results.sarif
+          category: trivy-image-${{ matrix.image_name }}
+
+      - name: Upload Trivy results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-results-${{ matrix.image_name }}
+          path: |
+            trivy-image-results.sarif
+            trivy-fs-results.sarif
+            trivy-config-results.sarif
+          retention-days: 30
+
+      - name: Check for critical/high container vulnerabilities
+        if: hashFiles('skip-scan') == ''
+        run: |
+          if [ -f trivy-image-results.sarif ]; then
+            CRITICAL=$(cat trivy-image-results.sarif | jq '[.runs[0].results[] | select(.level == "error")] | length')
+            HIGH=$(cat trivy-image-results.sarif | jq '[.runs[0].results[] | select(.level == "warning")] | length')
+            echo "Container scan - Critical: $CRITICAL, High: $HIGH"
+            if [ "$CRITICAL" -gt 0 ]; then
+              echo "❌ Critical container vulnerabilities found!"
+              exit 1
+            fi
+          fi
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Security Summary
+  # ─────────────────────────────────────────────────────────────────────────────
+  security-summary:
+    name: 📊 Security Summary
+    runs-on: ubuntu-latest
+    needs: 
+      - semgrep-sast
+      - codeql-sast
+      - dependency-scan-go
+      - dependency-scan-node
+      - secrets-scan
+      - container-scan
+    if: always()
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: security-results
+        continue-on-error: true
+
+      - name: Generate Security Report
+        run: |
+          echo "# 🔒 Security Scan Report" > security-report.md
+          echo "" >> security-report.md
+          echo "**Run Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> security-report.md
+          echo "**Commit:** ${{ github.sha }}" >> security-report.md
+          echo "**Ref:** ${{ github.ref }}" >> security-report.md
+          echo "" >> security-report.md
+          echo "## Scan Results Summary" >> security-report.md
+          echo "" >> security-report.md
+          echo "| Scan Type | Status |" >> security-report.md
+          echo "|-----------|--------|" >> security-report.md
+          echo "| SAST (Semgrep) | ${{ needs.semgrep-sast.result }} |" >> security-report.md
+          echo "| SAST (CodeQL) | ${{ needs.codeql-sast.result }} |" >> security-report.md
+          echo "| Dependency Scan (Go) | ${{ needs.dependency-scan-go.result }} |" >> security-report.md
+          echo "| Dependency Scan (Node) | ${{ needs.dependency-scan-node.result }} |" >> security-report.md
+          echo "| Secrets Detection | ${{ needs.secrets-scan.result }} |" >> security-report.md
+          echo "| Container Scan | ${{ needs.container-scan.result }} |" >> security-report.md
+          echo "" >> security-report.md
+          echo "## Artifacts" >> security-report.md
+          echo "" >> security-report.md
+          echo "All detailed scan results are available as workflow artifacts." >> security-report.md
+          cat security-report.md
+
+      - name: Upload Security Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-summary-report
+          path: security-report.md
+          retention-days: 90
+
+      - name: Check Overall Status
+        run: |
+          if [ "${{ needs.semgrep-sast.result }}" == "failure" ] || \
+             [ "${{ needs.codeql-sast.result }}" == "failure" ] || \
+             [ "${{ needs.secrets-scan.result }}" == "failure" ] || \
+             [ "${{ needs.container-scan.result }}" == "failure" ]; then
+            echo "❌ One or more critical security checks failed!"
+            exit 1
+          fi
+          echo "✅ All critical security checks passed!"

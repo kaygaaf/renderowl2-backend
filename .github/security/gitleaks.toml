@@ -1,0 +1,124 @@
+# GitLeaks Configuration for Renderowl 2.0
+# https://github.com/gitleaks/gitleaks#configuration
+
+title = "Renderowl 2.0 GitLeaks Config"
+
+[extend]
+# Use default rules plus custom ones
+useDefault = true
+
+[[rules]]
+id = "renderowl-api-key"
+description = "Detected a Renderowl API key"
+regex = '''(?i)(renderowl|rov)_(api|key|secret|token)_[a-z0-9]{32,}'''
+tags = ["apikey", "renderowl"]
+keywords = ["renderowl", "rov"]
+[rules.allowlist]
+paths = ['''(?i)example''', '''(?i)test''', '''(?i)mock''', '''(?i)fixture''']
+
+[[rules]]
+id = "generic-api-key"
+description = "Generic API Key"
+regex = '''[aA][pP][iI]_?[kK][eE][yY].*['|\"][0-9a-zA-Z]{32,45}['|\"]'''
+tags = ["apikey", "generic"]
+entropy = 3.5
+
+[[rules]]
+id = "generic-secret"
+description = "Generic Secret"
+regex = '''[sS][eE][cC][rR][eE][tT].*['|\"][0-9a-zA-Z]{32,45}['|\"]'''
+tags = ["secret", "generic"]
+entropy = 3.5
+
+[[rules]]
+id = "aws-access-key"
+description = "AWS Access Key ID"
+regex = '''(A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}'''
+tags = ["aws", "apikey"]
+
+[[rules]]
+id = "aws-secret-key"
+description = "AWS Secret Access Key"
+regex = '''(?i)aws(.{0,20})?(?-i)['\"][0-9a-zA-Z\/+]{40}['\"]'''
+tags = ["aws", "secret"]
+
+[[rules]]
+id = "github-pat"
+description = "GitHub Personal Access Token"
+regex = '''ghp_[0-9a-zA-Z]{36}'''
+tags = ["github", "pat"]
+
+[[rules]]
+id = "github-oauth"
+description = "GitHub OAuth Access Token"
+regex = '''gho_[0-9a-zA-Z]{36}'''
+tags = ["github", "oauth"]
+
+[[rules]]
+id = "github-app-token"
+description = "GitHub App Token"
+regex = '''(ghu|ghs)_[0-9a-zA-Z]{36}'''
+tags = ["github", "app"]
+
+[[rules]]
+id = "github-refresh-token"
+description = "GitHub Refresh Token"
+regex = '''ghr_[0-9a-zA-Z]{76}'''
+tags = ["github", "refresh"]
+
+[[rules]]
+id = "slack-access-token"
+description = "Slack Access Token"
+regex = '''xox[baprs]-[0-9]{10,13}-[0-9]{10,13}(-[a-zA-Z0-9]{24})?'''
+tags = ["slack"]
+
+[[rules]]
+id = "slack-webhook"
+description = "Slack Webhook"
+regex = '''https://hooks\.slack\.com/services/T[a-zA-Z0-9_]{8}/B[a-zA-Z0-9_]{8,12}/[a-zA-Z0-9_]{24}'''
+tags = ["slack", "webhook"]
+
+[[rules]]
+id = "stripe-api-key"
+description = "Stripe API Key"
+regex = '''(?i)(sk|pk)_(test|live)_[0-9a-zA-Z]{24,99}'''
+tags = ["stripe", "apikey"]
+
+[[rules]]
+id = "sendgrid-api-key"
+description = "SendGrid API Key"
+regex = '''SG\.[a-zA-Z0-9]{22}\.[a-zA-Z0-9]{43}'''
+tags = ["sendgrid", "apikey"]
+
+[[rules]]
+id = "jwt-token"
+description = "JSON Web Token"
+regex = '''eyJ[A-Za-z0-9_/+-]*={0,2}\.eyJ[A-Za-z0-9_/+-]*={0,2}\.[A-Za-z0-9._/+-]*={0,2}'''
+tags = ["jwt"]
+entropy = 3.5
+
+[[rules]]
+id = "private-key"
+description = "Private Key"
+regex = '''(?i)-----BEGIN (RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----'''
+tags = ["key", "privatekey"]
+
+# Allowlists for false positives
+[allowlist]
+description = "Global allowlist"
+paths = [
+    '''gitleaks.toml''',
+    '''(.*?)(jpg|gif|doc|pdf|bin|mp3|mp4|mov|ttf|woff|woff2|png|svg)$''',
+    '''(.*?)(node_modules|vendor|dist|\.next)($|/)''',
+    '''(.*?)(_test\.go|\.test\.ts|\.spec\.ts)$''',
+]
+
+regexes = [
+    '''^test-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$''',
+    '''^example-[a-zA-Z0-9]{32}$''',
+    '''^YOUR_[A-Z_]+_HERE$''',
+]
+
+commits = [
+    "example-commit-hash-to-ignore",
+]

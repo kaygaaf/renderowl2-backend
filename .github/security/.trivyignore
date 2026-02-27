@@ -1,0 +1,14 @@
+# Trivy Ignore File
+# https://aquasecurity.github.io/trivy/latest/docs/configuration/filtering/
+# Add CVE IDs to ignore (one per line with optional expiration and comment)
+
+# Example entries:
+# CVE-2021-12345 # This is a false positive for our use case
+# CVE-2021-67890 exp:2024-12-31 # Temporary ignore, review by end of year
+
+# Go stdlib false positives (when using latest Go version)
+# CVE-2020-29509
+# CVE-2020-29511
+
+# Node.js dev dependencies (only affect development, not production)
+# CVE-2023-xxxxx # dev dependency only

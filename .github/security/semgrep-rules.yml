@@ -1,0 +1,150 @@
+# Semgrep Rules Configuration for Renderowl 2.0
+# https://semgrep.dev/docs/writing-rules/rule-syntax
+
+rules:
+  # Import standard rule packs
+  - id: semgrep-go-security
+    pattern: |
+      import "semgrep-rules/go"
+    languages: [go]
+    message: "Using Go security rules"
+    severity: INFO
+
+  # Custom rules for Renderowl
+  
+  # Rule: Hardcoded credentials in Go
+  - id: hardcoded-credentials-go
+    pattern-either:
+      - pattern: |
+          $VAR = "..."
+          ...
+          $VAR = "...password..."
+      - pattern: |
+          $VAR = "...api_key..."
+      - pattern: |
+          $VAR = "...secret..."
+    languages: [go]
+    message: "Potential hardcoded credentials detected"
+    severity: ERROR
+    metadata:
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 – Identification and Authentication Failures"
+
+  # Rule: SQL Injection in Go
+  - id: sql-injection-go
+    pattern-either:
+      - pattern: |
+          db.Query($X + ...)
+      - pattern: |
+          db.Exec($X + ...)
+      - pattern: |
+          db.Query(fmt.Sprintf(...))
+    languages: [go]
+    message: "Potential SQL injection vulnerability"
+    severity: ERROR
+    metadata:
+      cwe: "CWE-89: SQL Injection"
+      owasp: "A03:2021 – Injection"
+
+  # Rule: Insecure HTTP in Go
+  - id: insecure-http-go
+    pattern: |
+      http.ListenAndServe("...", ...)
+    languages: [go]
+    message: "Insecure HTTP server detected. Use HTTPS/TLS."
+    severity: WARNING
+    metadata:
+      cwe: "CWE-319: Cleartext Transmission of Sensitive Information"
+
+  # Rule: Command injection in Go
+  - id: command-injection-go
+    pattern-either:
+      - pattern: |
+          exec.Command($X, ...)
+      - pattern: |
+          os.Exec(...)
+    languages: [go]
+    message: "Potential command injection. Validate user input."
+    severity: ERROR
+    metadata:
+      cwe: "CWE-78: OS Command Injection"
+
+  # TypeScript/JavaScript Rules
+  
+  # Rule: eval() usage
+  - id: dangerous-eval
+    pattern: |
+      eval($X)
+    languages: [javascript, typescript]
+    message: "Dangerous use of eval()"
+    severity: ERROR
+    metadata:
+      cwe: "CWE-95: Eval Injection"
+
+  # Rule: innerHTML with user input
+  - id: xss-innerhtml
+    pattern-either:
+      - pattern: |
+          $EL.innerHTML = $X
+      - pattern: |
+          $EL.outerHTML = $X
+    languages: [javascript, typescript]
+    message: "Potential XSS - innerHTML with potentially unsafe content"
+    severity: ERROR
+    metadata:
+      cwe: "CWE-79: Cross-site Scripting"
+      owasp: "A03:2021 – Injection"
+
+  # Rule: dangerouslySetInnerHTML in React
+  - id: react-dangerous-html
+    pattern: |
+      dangerouslySetInnerHTML={...}
+    languages: [javascript, typescript]
+    message: "dangerouslySetInnerHTML can lead to XSS if content is not sanitized"
+    severity: WARNING
+    metadata:
+      cwe: "CWE-79: Cross-site Scripting"
+
+  # Rule: Hardcoded API keys in JS/TS
+  - id: hardcoded-api-key
+    pattern-regex: (api[_-]?key|apikey|api[_-]?secret)\s*[=:]\s*["'][a-zA-Z0-9]{16,}["']
+    languages: [javascript, typescript]
+    message: "Potential hardcoded API key"
+    severity: ERROR
+    metadata:
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+
+  # Rule: Insecure randomness
+  - id: insecure-random
+    pattern: |
+      Math.random()
+    languages: [javascript, typescript]
+    message: "Math.random() is not cryptographically secure. Use crypto.randomBytes() or crypto.getRandomValues()"
+    severity: WARNING
+    metadata:
+      cwe: "CWE-338: Use of Cryptographically Weak PRNG"
+
+  # Rule: Disabled TLS verification
+  - id: disabled-tls-verify
+    pattern-regex: rejectUnauthorized\s*[=:]\s*false
+    languages: [javascript, typescript]
+    message: "TLS certificate verification is disabled"
+    severity: ERROR
+    metadata:
+      cwe: "CWE-295: Improper Certificate Validation"
+
+  # General Rules
+  
+  # Rule: Debug mode enabled
+  - id: debug-mode-enabled
+    pattern-regex: (DEBUG|debug)\s*[=:]\s*true
+    languages: [go, javascript, typescript]
+    message: "Debug mode may be enabled"
+    severity: WARNING
+
+  # Rule: TODO/FIXME with security implications
+  - id: security-todo
+    pattern-regex: (TODO|FIXME|XXX|HACK).*[Ss]ecurity|[Ss]ecurity.*(TODO|FIXME|XXX|HACK)
+    languages: [go, javascript, typescript]
+    message: "Security-related TODO found - review and address"
+    severity: INFO

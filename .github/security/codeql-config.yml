@@ -1,0 +1,52 @@
+# CodeQL Configuration for Renderowl 2.0
+# https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/customizing-your-advanced-setup-for-code-scanning
+
+name: "Renderowl 2.0 CodeQL Config"
+
+disable-default-queries: false
+
+queries:
+  - uses: security-extended
+  - uses: security-and-quality
+  
+  # Custom query packs can be added here
+  # - uses: ./custom-queries
+
+paths:
+  - backend
+  - frontend/src
+  - frontend/pages
+  - frontend/components
+  - pkg
+  - cmd
+  - internal
+
+paths-ignore:
+  - '**/vendor/**'
+  - '**/node_modules/**'
+  - '**/*_test.go'
+  - '**/*.test.ts'
+  - '**/*.test.tsx'
+  - '**/*.spec.ts'
+  - '**/*.spec.tsx'
+  - 'frontend/dist/**'
+  - 'frontend/.next/**'
+  - '**/mocks/**'
+  - '**/testdata/**'
+
+query-filters:
+  # Exclude specific rules if needed
+  - exclude:
+      id: go/log-injection
+  
+  # Adjust severity levels
+  - exclude:
+      severity: warning
+      tags:
+        - maintainability
+  
+  # Exclude test files from certain checks
+  - exclude:
+      id: go/missing-error-check
+      paths:
+        - '**/*_test.go'
